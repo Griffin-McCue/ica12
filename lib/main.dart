@@ -1,14 +1,11 @@
 // Import Flutter package
 import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'firebase_options.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 
-Future<void> main() async {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  await Firebase.initializeApp();
   runApp(InventoryApp());
 }
 
@@ -26,37 +23,31 @@ class InventoryApp extends StatelessWidget {
 }
 
 class InventoryHomePage extends StatefulWidget {
-  InventoryHomePage({Key? key, this.title}) : super(key: key);
+  InventoryHomePage({Key? key, required this.title}) : super(key: key);
 
-  final String? title;
+  final String title;
 
   @override
   _InventoryHomePageState createState() => _InventoryHomePageState();
 }
 
 class _InventoryHomePageState extends State<InventoryHomePage> {
-  final CollectionReference _inventoryItems =
-      FirebaseFirestore.instance.collection('products'); // Using 'products' collection
-
-  Future<void> _addItem() async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => AddItemScreen()),
-    );
-  }
-
-  Future<void> _updateItem(DocumentSnapshot snapshot) async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-          builder: (context) => UpdateItemScreen(item: snapshot)),
-    );
-  }
+  final CollectionReference _inventoryCollection =
+      FirebaseFirestore.instance.collection('inventory');
 
   Future<void> _deleteItem(String itemId) async {
-    await _inventoryItems.doc(itemId).delete();
+    await _inventoryCollection.doc(itemId).delete();
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Successfully deleted the item')),
+      SnackBar(content: Text('Item deleted successfully!')),
+    );
+  }
+
+  void _navigateToEditItemScreen(String itemId, Map<String, dynamic> itemData) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => EditItemScreen(itemId: itemId, itemData: itemData),
+      ),
     );
   }
 
@@ -64,65 +55,67 @@ class _InventoryHomePageState extends State<InventoryHomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.title!),
+        title: Text(widget.title),
       ),
       body: StreamBuilder<QuerySnapshot>(
-        stream: _inventoryItems.snapshots(),
-        builder: (context, AsyncSnapshot<QuerySnapshot> snapshot) {
+        stream: _inventoryCollection.snapshots(),
+        builder: (BuildContext context, AsyncSnapshot<QuerySnapshot> snapshot) {
           if (snapshot.hasError) {
-            return const Center(child: Text('Something went wrong'));
+            return Center(child: Text('Something went wrong: ${snapshot.error}'));
           }
 
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
+            return Center(child: CircularProgressIndicator());
           }
 
-          final inventoryData = snapshot.data!.docs;
-
-          if (inventoryData.isEmpty) {
-            return const Center(child: Text('Your inventory is empty.'));
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return Center(child: Text('Your inventory is empty. Click the "+" button to add items.'));
           }
 
-          return ListView.builder(
-            itemCount: inventoryData.length,
-            itemBuilder: (context, index) {
-              final DocumentSnapshot documentSnapshot = inventoryData[index];
+          return ListView(
+            children: snapshot.data!.docs.map((DocumentSnapshot document) {
+              Map<String, dynamic> data =
+                  document.data() as Map<String, dynamic>;
               return Card(
-                margin: const EdgeInsets.all(10),
+                margin: EdgeInsets.all(8.0),
                 child: ListTile(
-                  title: Text(documentSnapshot['name']),
+                  title: Text(data['name'] ?? 'No Name'),
                   subtitle: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Quantity: ${documentSnapshot['quantity']}'),
-                      Text('Price: \$${documentSnapshot['price'].toStringAsFixed(2)}'),
+                      Text('Quantity: ${data['quantity'] ?? 0}'),
+                      Text('Description: ${data['description'] ?? 'N/A'}'),
+                      Text('Price: \$${(data['price'] ?? 0.0).toStringAsFixed(2)}'),
                     ],
                   ),
-                  trailing: SizedBox(
-                    width: 100,
-                    child: Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.edit),
-                          onPressed: () => _updateItem(documentSnapshot),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.delete),
-                          onPressed: () => _deleteItem(documentSnapshot.id),
-                        ),
-                      ],
-                    ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: Icon(Icons.edit),
+                        onPressed: () => _navigateToEditItemScreen(document.id, data),
+                      ),
+                      IconButton(
+                        icon: Icon(Icons.delete),
+                        onPressed: () => _deleteItem(document.id),
+                      ),
+                    ],
                   ),
                 ),
               );
-            },
+            }).toList(),
           );
         },
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _addItem,
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => AddItemScreen()),
+          );
+        },
         tooltip: 'Add Item',
-        child: const Icon(Icons.add),
+        child: Icon(Icons.add),
       ),
     );
   }
@@ -134,31 +127,26 @@ class AddItemScreen extends StatefulWidget {
 }
 
 class _AddItemScreenState extends State<AddItemScreen> {
+  final _formKey = GlobalKey<FormState>();
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _quantityController = TextEditingController();
+  final TextEditingController _descriptionController = TextEditingController();
   final TextEditingController _priceController = TextEditingController();
 
-  final CollectionReference _inventoryItems =
-      FirebaseFirestore.instance.collection('products'); // Using 'products' collection
+  final CollectionReference _inventoryCollection =
+      FirebaseFirestore.instance.collection('inventory');
 
-  Future<void> _create() async {
-    final String name = _nameController.text;
-    final int? quantity = int.tryParse(_quantityController.text);
-    final double? price = double.tryParse(_priceController.text);
-
-    if (name.isNotEmpty && quantity != null && price != null) {
-      await _inventoryItems.add({
-        "name": name,
-        "quantity": quantity,
-        "price": price,
+  Future<void> _addItem() async {
+    if (_formKey.currentState!.validate()) {
+      await _inventoryCollection.add({
+        'name': _nameController.text.trim(),
+        'quantity': int.tryParse(_quantityController.text.trim()) ?? 0,
+        'description': _descriptionController.text.trim(),
+        'price': double.tryParse(_priceController.text.trim()) ?? 0.0,
       });
-      Navigator.pop(context);
+      Navigator.pop(context); // Go back to the inventory list screen
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Successfully added an item')),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill all fields correctly')),
+        SnackBar(content: Text('Item added successfully!')),
       );
     }
   }
@@ -167,83 +155,108 @@ class _AddItemScreenState extends State<AddItemScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Add New Item'),
+        title: Text('Add New Item'),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          children: [
-            TextField(
-              controller: _nameController,
-              decoration: const InputDecoration(labelText: 'Item Name'),
-            ),
-            TextField(
-              controller: _quantityController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Quantity'),
-            ),
-            TextField(
-              controller: _priceController,
-              keyboardType: TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Price'),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: _create,
-              child: const Text('Add Item'),
-            ),
-          ],
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              TextFormField(
+                controller: _nameController,
+                decoration: InputDecoration(labelText: 'Item Name'),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Please enter the item name';
+                  }
+                  return null;
+                },
+              ),
+              TextFormField(
+                controller: _quantityController,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(labelText: 'Quantity'),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Please enter the quantity';
+                  }
+                  if (int.tryParse(value.trim()) == null) {
+                    return 'Please enter a valid number';
+                  }
+                  return null;
+                },
+              ),
+              TextFormField(
+                controller: _descriptionController,
+                decoration: InputDecoration(labelText: 'Description (Optional)'),
+                maxLines: 3,
+              ),
+              TextFormField(
+                controller: _priceController,
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(labelText: 'Price (Optional)'),
+                validator: (value) {
+                  if (value != null && value.trim().isNotEmpty && double.tryParse(value.trim()) == null) {
+                    return 'Please enter a valid price';
+                  }
+                  return null;
+                },
+              ),
+              SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: _addItem,
+                child: Text('Add Item'),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class UpdateItemScreen extends StatefulWidget {
-  final DocumentSnapshot? item;
+class EditItemScreen extends StatefulWidget {
+  final String itemId;
+  final Map<String, dynamic> itemData;
 
-  UpdateItemScreen({Key? key, this.item}) : super(key: key);
+  EditItemScreen({required this.itemId, required this.itemData});
 
   @override
-  _UpdateItemScreenState createState() => _UpdateItemScreenState();
+  _EditItemScreenState createState() => _EditItemScreenState();
 }
 
-class _UpdateItemScreenState extends State<UpdateItemScreen> {
+class _EditItemScreenState extends State<EditItemScreen> {
+  final _formKey = GlobalKey<FormState>();
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _quantityController = TextEditingController();
+  final TextEditingController _descriptionController = TextEditingController();
   final TextEditingController _priceController = TextEditingController();
 
-  final CollectionReference _inventoryItems =
-      FirebaseFirestore.instance.collection('products'); // Using 'products' collection
+  final CollectionReference _inventoryCollection =
+      FirebaseFirestore.instance.collection('inventory');
 
   @override
   void initState() {
     super.initState();
-    if (widget.item != null) {
-      _nameController.text = widget.item!['name'];
-      _quantityController.text = widget.item!['quantity'].toString();
-      _priceController.text = widget.item!['price'].toString();
-    }
+    _nameController.text = widget.itemData['name'] ?? '';
+    _quantityController.text = widget.itemData['quantity']?.toString() ?? '';
+    _descriptionController.text = widget.itemData['description'] ?? '';
+    _priceController.text = widget.itemData['price']?.toString() ?? '';
   }
 
-  Future<void> _update() async {
-    final String name = _nameController.text;
-    final int? quantity = int.tryParse(_quantityController.text);
-    final double? price = double.tryParse(_priceController.text);
-
-    if (name.isNotEmpty && quantity != null && price != null) {
-      await _inventoryItems.doc(widget.item!.id).update({
-        "name": name,
-        "quantity": quantity,
-        "price": price,
+  Future<void> _updateItem() async {
+    if (_formKey.currentState!.validate()) {
+      await _inventoryCollection.doc(widget.itemId).update({
+        'name': _nameController.text.trim(),
+        'quantity': int.tryParse(_quantityController.text.trim()) ?? 0,
+        'description': _descriptionController.text.trim(),
+        'price': double.tryParse(_priceController.text.trim()) ?? 0.0,
       });
-      Navigator.pop(context);
+      Navigator.pop(context); // Go back to the inventory list screen
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Successfully updated the item')),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill all fields correctly')),
+        SnackBar(content: Text('Item updated successfully!')),
       );
     }
   }
@@ -252,32 +265,62 @@ class _UpdateItemScreenState extends State<UpdateItemScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Edit Item'),
+        title: Text('Edit Item'),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          children: [
-            TextField(
-              controller: _nameController,
-              decoration: const InputDecoration(labelText: 'Item Name'),
-            ),
-            TextField(
-              controller: _quantityController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Quantity'),
-            ),
-            TextField(
-              controller: _priceController,
-              keyboardType: TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Price'),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: _update,
-              child: const Text('Update Item'),
-            ),
-          ],
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              TextFormField(
+                controller: _nameController,
+                decoration: InputDecoration(labelText: 'Item Name'),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Please enter the item name';
+                  }
+                  return null;
+                },
+              ),
+              TextFormField(
+                controller: _quantityController,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(labelText: 'Quantity'),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Please enter the quantity';
+                  }
+                  if (int.tryParse(value.trim()) == null) {
+                    return 'Please enter a valid number';
+                  }
+                  return null;
+                },
+              ),
+              TextFormField(
+                controller: _descriptionController,
+                decoration: InputDecoration(labelText: 'Description (Optional)'),
+                maxLines: 3,
+              ),
+              TextFormField(
+                controller: _priceController,
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(labelText: 'Price (Optional)'),
+                validator: (value) {
+                  if (value != null && value.trim().isNotEmpty && double.tryParse(value.trim()) == null) {
+                    return 'Please enter a valid price';
+                  }
+                  return null;
+                },
+              ),
+              SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: _updateItem,
+                child: Text('Update Item'),
+              ),
+            ],
+          ),
         ),
       ),
     );
